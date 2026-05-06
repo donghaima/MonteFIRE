@@ -56,7 +56,6 @@ DEFAULT_SIM_PARAMS: dict = {
     "social_security_start_age": 67,
     "filing_status":          "married_filing_jointly",
     "household_size":          2,
-    "persons_covered_by_aca":  2,
 }
 
 # ── Session-state initialisation ──────────────────────────────────────────────
@@ -113,7 +112,6 @@ def _build_sim_params() -> SimulationParams | None:
             "num_iterations":             int(sp["num_iterations"]),
             "filing_status":              sp["filing_status"],
             "household_size":             int(sp["household_size"]),
-            "persons_covered_by_aca":     int(sp["persons_covered_by_aca"]),
         },
     )
 
@@ -517,15 +515,11 @@ def _render_cash_flows() -> None:
         index=0 if sp["filing_status"] == "married_filing_jointly" else 1,
     )
 
-    c1, c2 = st.columns(2)
-    sp["household_size"] = c1.number_input(
+    sp["household_size"] = st.number_input(
         "Household Size", 1, 8, int(sp["household_size"]), 1,
         help="Used to compute the Federal Poverty Level for ACA subsidy calculations.",
     )
-    sp["persons_covered_by_aca"] = c2.number_input(
-        "Persons on ACA Plan", 1, 8, int(sp["persons_covered_by_aca"]), 1,
-        help="Adults receiving ACA marketplace coverage before Medicare eligibility at 65.",
-    )
+    st.caption("ACA vs. Medicare coverage is determined automatically from each member's age in household.yaml.")
 
     st.session_state.sim_params = sp
 
@@ -676,7 +670,7 @@ def _rerun_and_save(base_params: SimulationParams, tool_args: dict) -> None:
         "plan_to_age":            base_params.plan_to_age,
         "filing_status":          base_params.filing_status,
         "household_size":         base_params.household_size,
-        "persons_covered_by_aca": base_params.persons_covered_by_aca,
+        "spouse_current_age":     base_params.spouse_current_age,
         "mean_annual_return":     base_params.mean_annual_return,
         "return_std_dev":         base_params.return_std_dev,
         "inflation_rate":         base_params.inflation_rate,

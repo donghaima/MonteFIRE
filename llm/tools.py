@@ -160,7 +160,7 @@ def _exec_run_monte_carlo(
         "plan_to_age":             base.plan_to_age,
         "filing_status":           base.filing_status,
         "household_size":          base.household_size,
-        "persons_covered_by_aca":  base.persons_covered_by_aca,
+        "spouse_current_age":      base.spouse_current_age,
         "mean_annual_return":      base.mean_annual_return,
         "return_std_dev":          base.return_std_dev,
         "inflation_rate":          base.inflation_rate,

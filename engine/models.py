@@ -22,7 +22,7 @@ class SimulationParams:
     plan_to_age: int = 90
     filing_status: str = "married_filing_jointly"   # or "single"
     household_size: int = 2
-    persons_covered_by_aca: int = 2  # adults receiving ACA coverage pre-65
+    spouse_current_age: float | None = None  # None = single / unknown
 
     # ── Market assumptions ────────────────────────────────────────────────────
     mean_annual_return: float = 0.07
@@ -56,14 +56,23 @@ class SimulationParams:
                 for h in acct.get("holdings", []):
                     taxable_basis += h.get("cost_basis_usd", 0.0)
 
-        # Pull primary member age
+        # Pull member ages from birth dates
         members = state.get("owner", {}).get("members", [])
         primary = next((m for m in members if m["role"] == "primary"), members[0] if members else None)
+        spouse  = next((m for m in members if m["role"] == "spouse"), None)
+
+        from datetime import date
+        today = date.today()
+
         current_age = 0.0
         if primary:
-            from datetime import date
             bd = date.fromisoformat(primary["birth_date"])
-            current_age = (date.today() - bd).days / 365.25
+            current_age = (today - bd).days / 365.25
+
+        spouse_current_age: float | None = None
+        if spouse:
+            bd = date.fromisoformat(spouse["birth_date"])
+            spouse_current_age = round((today - bd).days / 365.25, 2)
 
         params = cls(
             taxable_balance=summary.get("taxable", 0.0),
@@ -71,6 +80,7 @@ class SimulationParams:
             tax_deferred_balance=summary.get("tax_deferred", 0.0),
             tax_free_balance=summary.get("tax_free", 0.0),
             current_age=round(current_age, 2),
+            spouse_current_age=spouse_current_age,
         )
         if overrides:
             for k, v in overrides.items():

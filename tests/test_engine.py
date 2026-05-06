@@ -185,9 +185,9 @@ class TestACAEngine:
 
     def test_medicare_cheaper_than_aca_at_cliff(self, tax_cfg):
         from engine.aca_engine import compute_healthcare_cost
-        # Age 65 → Medicare; same MAGI above ACA cliff
-        mc = compute_healthcare_cost(65, 100_000, 2, 2, "married_filing_jointly", tax_cfg)
-        aca = compute_healthcare_cost(64, 100_000, 2, 2, "married_filing_jointly", tax_cfg)
+        # Both on Medicare at 65 vs both on ACA at 64 — Medicare wins above ACA cliff
+        mc  = compute_healthcare_cost(65, 66.0, 100_000, 2, "married_filing_jointly", tax_cfg)
+        aca = compute_healthcare_cost(64, 63.0, 100_000, 2, "married_filing_jointly", tax_cfg)
         assert mc < aca
 
     def test_irmaa_surcharge_above_threshold(self, tax_cfg):
@@ -198,15 +198,34 @@ class TestACAEngine:
 
     def test_healthcare_routes_to_aca_before_65(self, tax_cfg):
         from engine.aca_engine import compute_aca_cost, compute_healthcare_cost
-        cost_64 = compute_healthcare_cost(64, 60_000, 2, 2, "married_filing_jointly", tax_cfg)
+        # Both spouses under 65 → full ACA cost
+        cost_64 = compute_healthcare_cost(64, 63.0, 60_000, 2, "married_filing_jointly", tax_cfg)
         expected = compute_aca_cost(60_000, 2, 2, tax_cfg)
         assert cost_64 == pytest.approx(expected)
 
     def test_healthcare_routes_to_medicare_at_65(self, tax_cfg):
         from engine.aca_engine import compute_healthcare_cost, compute_medicare_cost
-        cost_65 = compute_healthcare_cost(65, 60_000, 2, 2, "married_filing_jointly", tax_cfg)
+        # Both spouses 65+ → full Medicare cost
+        cost_65 = compute_healthcare_cost(65, 66.0, 60_000, 2, "married_filing_jointly", tax_cfg)
         expected = compute_medicare_cost(60_000, 2, "married_filing_jointly", tax_cfg)
         assert cost_65 == pytest.approx(expected)
+
+    def test_split_coverage_when_ages_straddle_65(self, tax_cfg):
+        from engine.aca_engine import compute_aca_cost, compute_healthcare_cost, compute_medicare_cost
+        # Primary 66 (Medicare), spouse 63 (ACA) → split cost
+        cost = compute_healthcare_cost(66, 63.0, 60_000, 2, "married_filing_jointly", tax_cfg)
+        expected = (
+            compute_medicare_cost(60_000, 1, "married_filing_jointly", tax_cfg)
+            + compute_aca_cost(60_000, 2, 1, tax_cfg)
+        )
+        assert cost == pytest.approx(expected)
+
+    def test_single_person_no_spouse(self, tax_cfg):
+        from engine.aca_engine import compute_aca_cost, compute_healthcare_cost
+        # No spouse (None) — only primary counted
+        cost = compute_healthcare_cost(60, None, 60_000, 1, "single", tax_cfg)
+        expected = compute_aca_cost(60_000, 1, 1, tax_cfg)
+        assert cost == pytest.approx(expected)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -56,6 +56,11 @@ def _simulate_one_run(
 
     start_age = int(params.current_age)
     ages = list(range(start_age, params.plan_to_age + 1))
+    # Age offset stays constant throughout the simulation
+    spouse_age_offset = (
+        params.spouse_current_age - params.current_age
+        if params.spouse_current_age is not None else None
+    )
     n_years = len(ages)
 
     # Pre-draw all returns for this run at once (faster than per-year calls)
@@ -98,12 +103,13 @@ def _simulate_one_run(
         total_ordinary = pension + bd_spend.ordinary_income + ss_taxable
         magi = total_ordinary + bd_spend.capital_gains
 
-        # 7. Healthcare cost (ACA cliff or Medicare based on age)
+        # 7. Healthcare cost — each person routed to ACA or Medicare by their own age
+        spouse_age = float(age) + spouse_age_offset if spouse_age_offset is not None else None
         healthcare = compute_healthcare_cost(
-            age=float(age),
+            primary_age=float(age),
+            spouse_age=spouse_age,
             magi=magi,
             household_size=params.household_size,
-            persons_covered=params.persons_covered_by_aca,
             filing_status=params.filing_status,
             tax_cfg=tax_cfg,
         )

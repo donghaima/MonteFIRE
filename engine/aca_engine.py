@@ -105,17 +105,31 @@ def compute_medicare_cost(
 
 
 def compute_healthcare_cost(
-    age: float,
+    primary_age: float,
+    spouse_age: float | None,
     magi: float,
     household_size: int,
-    persons_covered: int,
     filing_status: str,
     tax_cfg: dict,
 ) -> float:
     """
-    Route to ACA or Medicare based on age. Returns total annual healthcare cost.
+    Route each person to ACA or Medicare based on their individual age.
+
+    When one spouse turns 65 before the other, the household is split:
+    the older person pays Medicare costs while the younger stays on ACA.
+    This models the step-down in ACA exposure that matters for FIRE planning.
     """
     medicare_age = tax_cfg["medicare"]["eligible_age"]
-    if age >= medicare_age:
-        return compute_medicare_cost(magi, persons_covered, filing_status, tax_cfg)
-    return compute_aca_cost(magi, household_size, persons_covered, tax_cfg)
+
+    primary_medicare = primary_age >= medicare_age
+    spouse_medicare = spouse_age is not None and spouse_age >= medicare_age
+
+    n_medicare = int(primary_medicare) + int(spouse_age is not None and spouse_medicare)
+    n_aca = int(not primary_medicare) + int(spouse_age is not None and not spouse_medicare)
+
+    cost = 0.0
+    if n_medicare > 0:
+        cost += compute_medicare_cost(magi, n_medicare, filing_status, tax_cfg)
+    if n_aca > 0:
+        cost += compute_aca_cost(magi, household_size, n_aca, tax_cfg)
+    return cost
