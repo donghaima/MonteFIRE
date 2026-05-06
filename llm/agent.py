@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 DEFAULT_MODEL = "gemma4:e4b"
 
 
-# ── Public return type ────────────────────────────────────────────────────────
+# ── Public return types ───────────────────────────────────────────────────────
 
 @dataclass
 class ChatResponse:
@@ -43,6 +43,19 @@ class ChatResponse:
     tool_args: dict = field(default_factory=dict)
     tool_result: dict | None = None    # compact sim result if run_monte_carlo was called
     error: str | None = None
+
+
+@dataclass
+class ResponsePrep:
+    """Intermediate state after tool detection/execution, ready for streaming."""
+    messages: list[dict]
+    model: str
+    tool_called: bool = False
+    tool_name: str | None = None
+    tool_args: dict = field(default_factory=dict)
+    tool_result: dict | None = None
+    error: str | None = None
+    fallback_text: str = ""
 
 
 # ── Ollama availability ───────────────────────────────────────────────────────
@@ -89,9 +102,9 @@ def _stream_text(messages: list[dict], model: str) -> Generator[str, None, None]
         yield f"\n\n*(streaming error: {exc})*"
 
 
-# ── Main chat function ────────────────────────────────────────────────────────
+# ── Core: prepare + stream ────────────────────────────────────────────────────
 
-def chat(
+def prepare_response(
     user_message: str,
     history: list[dict],
     portfolio_state: dict | None,
@@ -99,20 +112,10 @@ def chat(
     base_params: SimulationParams | None,
     config_dir: Path,
     model: str = DEFAULT_MODEL,
-) -> ChatResponse:
+) -> ResponsePrep:
     """
-    Send user_message to the LLM, execute any tool calls, return the final response.
-
-    Args:
-        user_message:    The current user input.
-        history:         Previous turns (role/content only, no current message).
-        portfolio_state: portfolio_state.json dict for system prompt context.
-        sim_result:      Last compact simulation result dict for context.
-        base_params:     Current SimulationParams used as defaults for tool calls.
-        config_dir:      Path to config/ directory (passed to engine).
-        model:           Ollama model name.
-
-    Returns a ChatResponse dataclass.
+    Run Pass 1 (tool detection, non-streaming) and Pass 2 (tool execution).
+    Returns a ResponsePrep ready to stream the final answer.
     """
     system_prompt = build_system_prompt(portfolio_state, sim_result, base_params)
 
@@ -122,23 +125,23 @@ def chat(
         + [{"role": "user", "content": user_message}]
     )
 
-    # ── Pass 1: check for tool calls (non-streaming) ──────────────────────────
+    # Pass 1 — detect tool calls
     try:
         response = ollama.chat(model=model, messages=messages, tools=TOOLS)
     except Exception as exc:
         log.error("Ollama call failed: %s", exc)
-        return ChatResponse(text="", error=str(exc))
+        return ResponsePrep(messages=messages, model=model, error=str(exc))
 
     msg = response.message
 
     if not msg.tool_calls:
-        # No tools needed — stream the response
-        stream_messages = messages  # same context, just stream it
-        full_text = _collect_stream(model, stream_messages, fallback=msg.content or "")
-        return ChatResponse(text=full_text)
+        return ResponsePrep(
+            messages=messages,
+            model=model,
+            fallback_text=msg.content or "",
+        )
 
-    # ── Pass 2: execute tool calls ────────────────────────────────────────────
-    # Append the assistant's tool-call message
+    # Pass 2 — execute tool calls
     messages.append({
         "role": "assistant",
         "content": msg.content or "",
@@ -175,15 +178,56 @@ def chat(
             "content": json.dumps(result_dict, indent=2),
         })
 
-    # ── Pass 3: get final response (streaming) ────────────────────────────────
-    full_text = _collect_stream(model, messages)
-
-    return ChatResponse(
-        text=full_text,
+    return ResponsePrep(
+        messages=messages,
+        model=model,
         tool_called=True,
         tool_name=tool_name,
         tool_args=tool_args,
         tool_result=tool_result,
+    )
+
+
+def stream_response(prep: ResponsePrep) -> Generator[str, None, None]:
+    """Stream the final LLM response given a prepared state."""
+    yield from _stream_text(prep.messages, prep.model)
+
+
+# ── High-level chat() wrapper (non-streaming, for backward compat) ────────────
+
+def chat(
+    user_message: str,
+    history: list[dict],
+    portfolio_state: dict | None,
+    sim_result: dict | None,
+    base_params: SimulationParams | None,
+    config_dir: Path,
+    model: str = DEFAULT_MODEL,
+) -> ChatResponse:
+    """
+    Send user_message to the LLM, execute any tool calls, return the final response.
+    Collects the streaming response into a single string.
+    """
+    prep = prepare_response(
+        user_message=user_message,
+        history=history,
+        portfolio_state=portfolio_state,
+        sim_result=sim_result,
+        base_params=base_params,
+        config_dir=config_dir,
+        model=model,
+    )
+
+    if prep.error:
+        return ChatResponse(text="", error=prep.error)
+
+    full_text = _collect_stream(prep.model, prep.messages, fallback=prep.fallback_text)
+    return ChatResponse(
+        text=full_text,
+        tool_called=prep.tool_called,
+        tool_name=prep.tool_name,
+        tool_args=prep.tool_args,
+        tool_result=prep.tool_result,
     )
 
 

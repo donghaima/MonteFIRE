@@ -75,6 +75,18 @@ TOOL_RUN_MONTE_CARLO: dict = {
                     "type": "integer",
                     "description": "Monte Carlo iterations (default 500 for interactive speed).",
                 },
+                "state_income_tax_rate": {
+                    "type": "number",
+                    "description": "State income tax flat rate as a decimal (e.g. 0.05 for 5%). Default 0.",
+                },
+                "roth_conversion_annual": {
+                    "type": "number",
+                    "description": "Annual Roth conversion amount in dollars (0 = disabled).",
+                },
+                "roth_conversion_end_age": {
+                    "type": "integer",
+                    "description": "Age at which Roth conversions stop (default 63).",
+                },
             },
             "required": [],
         },
@@ -173,6 +185,9 @@ def _exec_run_monte_carlo(
         "pension_annual":             base.pension_annual,
         "tax_deferred_spouse_balance": base.tax_deferred_spouse_balance,
         "num_iterations":             500,   # faster for interactive use
+        "state_income_tax_rate":      base.state_income_tax_rate,
+        "roth_conversion_annual":     base.roth_conversion_annual,
+        "roth_conversion_end_age":    base.roth_conversion_end_age,
     }
     # Apply LLM overrides (only keys that appear in SimulationParams)
     valid_keys = set(params_dict.keys())

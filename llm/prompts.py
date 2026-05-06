@@ -46,6 +46,15 @@ _MILESTONES = """\
 - **400% FPL** — ACA subsidy cliff; one dollar over can cost $10k+/yr in premiums.\
 """
 
+_HOUSEHOLD_NOTE = """\
+## HOUSEHOLD & SPOUSE
+When the user asks about "what if my spouse claims SS at 62/70" or any age-specific
+spouse question, pass `ss_spouse_start_age` (not `social_security_start_age`) to
+`run_monte_carlo`. Each person's Medicare transition is tracked by their own age.
+The `spouse_current_age` parameter is set automatically from the household config
+and should not be overridden unless you are modelling a hypothetical person.\
+"""
+
 _INTERPRETATION = """\
 ## HOW TO INTERPRET SUCCESS RATE
 - ≥ 90 % — On track. Focus on optimisation (tax efficiency, Roth conversions).
@@ -59,7 +68,7 @@ def build_system_prompt(
     sim_result: dict | None,
     base_params: SimulationParams | None,
 ) -> str:
-    sections = [_PERSONA, _RULES, _MILESTONES, _INTERPRETATION]
+    sections = [_PERSONA, _RULES, _MILESTONES, _HOUSEHOLD_NOTE, _INTERPRETATION]
 
     # ── Portfolio context ─────────────────────────────────────────────────────
     if portfolio_state:

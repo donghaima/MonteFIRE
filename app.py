@@ -27,7 +27,7 @@ st.set_page_config(
 
 from engine import SimulationParams  # noqa: E402 — import after set_page_config
 from engine.monte_carlo import run as run_engine  # noqa: E402
-from llm import chat as llm_chat, is_ollama_running, list_models  # noqa: E402
+from llm import is_ollama_running, list_models, prepare_response, stream_response  # noqa: E402
 from llm.tools import _compact_sim_result  # noqa: E402
 
 # ── Paths & constants ─────────────────────────────────────────────────────────
@@ -61,6 +61,9 @@ DEFAULT_SIM_PARAMS: dict = {
     "filing_status":          "married_filing_jointly",
     "household_size":          2,
     "healthcare_inflation_rate": 5.0,
+    "state_income_tax_rate":   0.0,   # stored as percent
+    "roth_conversion_annual":  0,
+    "roth_conversion_end_age": 63,
 }
 
 # ── User-settings persistence ────────────────────────────────────────────────
@@ -103,6 +106,8 @@ def _init_state() -> None:
             st.session_state.sim_params = sp
     if "sim_result" not in st.session_state:
         st.session_state.sim_result = None
+    if "baseline_result" not in st.session_state:
+        st.session_state.baseline_result = None
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "llm_model" not in st.session_state:
@@ -158,6 +163,9 @@ def _build_sim_params() -> SimulationParams | None:
             "num_iterations":             int(sp["num_iterations"]),
             "filing_status":              sp["filing_status"],
             "household_size":             int(sp["household_size"]),
+            "state_income_tax_rate":      sp.get("state_income_tax_rate", 0.0) / 100.0,
+            "roth_conversion_annual":     float(sp.get("roth_conversion_annual", 0)),
+            "roth_conversion_end_age":    int(sp.get("roth_conversion_end_age", 63)),
         },
     )
 
@@ -178,7 +186,7 @@ def _fmt_dollar(v: float) -> str:
     return f"${v:,.0f}"
 
 
-def _trajectory_chart(result: dict) -> go.Figure:
+def _trajectory_chart(result: dict, baseline: dict | None = None) -> go.Figure:
     ages = result["ages"]
     med  = result["median_trajectory"]
     p10  = result["p10_trajectory"]
@@ -214,6 +222,15 @@ def _trajectory_chart(result: dict) -> go.Figure:
         name="Median",
         hovertemplate="Age %{x}<br>Median: $%{y:,.0f}<extra></extra>",
     ))
+
+    # Baseline overlay for scenario comparison
+    if baseline:
+        fig.add_trace(go.Scatter(
+            x=baseline["ages"], y=baseline["median_trajectory"],
+            line=dict(color="rgba(156,163,175,0.9)", width=2, dash="dot"),
+            name="Baseline Median",
+            hovertemplate="Age %{x}<br>Baseline: $%{y:,.0f}<extra></extra>",
+        ))
 
     # Zero-line to mark portfolio exhaustion
     fig.add_hline(y=0, line_color="rgba(239,68,68,0.5)", line_dash="dash", line_width=1)
@@ -255,6 +272,79 @@ def _area_chart(ages: list, values: list, title: str, color_rgb: str) -> go.Figu
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    return fig
+
+
+def _bucket_depletion_chart(result: dict) -> go.Figure | None:
+    ages     = result["ages"]
+    taxable  = result.get("median_taxable", [])
+    tax_def  = result.get("median_tax_deferred", [])
+    tax_free = result.get("median_tax_free", [])
+    if not taxable:
+        return None
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ages, y=taxable,
+        name="Taxable",
+        stackgroup="buckets",
+        fillcolor="rgba(59,130,246,0.55)",
+        line=dict(color="rgb(59,130,246)", width=1),
+        hovertemplate="Age %{x}<br>Taxable: $%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=ages, y=tax_def,
+        name="Tax-Deferred",
+        stackgroup="buckets",
+        fillcolor="rgba(239,68,68,0.55)",
+        line=dict(color="rgb(239,68,68)", width=1),
+        hovertemplate="Age %{x}<br>Tax-Deferred: $%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=ages, y=tax_free,
+        name="Tax-Free (Roth)",
+        stackgroup="buckets",
+        fillcolor="rgba(16,185,129,0.55)",
+        line=dict(color="rgb(16,185,129)", width=1),
+        hovertemplate="Age %{x}<br>Tax-Free: $%{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Bucket Depletion — Median Trajectory",
+        xaxis_title="Age",
+        yaxis=dict(tickprefix="$", tickformat=",.0s"),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=350,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    return fig
+
+
+def _allocation_donut(by_tt: dict) -> go.Figure:
+    labels = ["Taxable", "Tax-Deferred", "Tax-Free (Roth)"]
+    values = [by_tt.get("taxable", 0), by_tt.get("tax_deferred", 0), by_tt.get("tax_free", 0)]
+    colors = ["rgb(59,130,246)", "rgb(239,68,68)", "rgb(16,185,129)"]
+
+    fig = go.Figure(go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.52,
+        marker_colors=colors,
+        textinfo="label+percent",
+        hovertemplate="%{label}<br>$%{value:,.0f}<br>%{percent}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Tax Treatment Allocation",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
     return fig
 
 
@@ -337,7 +427,12 @@ def _render_dashboard() -> None:
 
     # ── Charts ────────────────────────────────────────────────────────────────
     if result:
-        st.plotly_chart(_trajectory_chart(result), use_container_width=True)
+        baseline = st.session_state.get("baseline_result")
+        st.plotly_chart(_trajectory_chart(result, baseline), use_container_width=True)
+
+        bucket_fig = _bucket_depletion_chart(result)
+        if bucket_fig:
+            st.plotly_chart(bucket_fig, use_container_width=True)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -354,7 +449,6 @@ def _render_dashboard() -> None:
             )
 
         # ACA cliff callout
-        cf: pd.DataFrame = st.session_state.cash_flows
         hc = result["median_healthcare"]
         if len(hc) > 1:
             max_jump = max(abs(hc[i] - hc[i - 1]) for i in range(1, len(hc)))
@@ -370,9 +464,41 @@ def _render_dashboard() -> None:
         )
 
     st.divider()
-    if st.button("▶  Run Simulation", type="primary", use_container_width=True, key="run_btn_dash"):
-        _run_simulation()
-        st.rerun()
+
+    # ── Run / Baseline / Export controls ─────────────────────────────────────
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([3, 2, 2, 2])
+    with ctrl1:
+        if st.button("▶  Run Simulation", type="primary", use_container_width=True, key="run_btn_dash"):
+            _run_simulation()
+            st.rerun()
+    with ctrl2:
+        if st.button("📌  Set as Baseline", use_container_width=True, disabled=not result,
+                     help="Save current result to overlay for comparison"):
+            st.session_state.baseline_result = result
+            st.toast("Baseline saved.", icon="📌")
+    with ctrl3:
+        if st.session_state.get("baseline_result"):
+            if st.button("🗑  Clear Baseline", use_container_width=True):
+                st.session_state.baseline_result = None
+                st.rerun()
+    with ctrl4:
+        if result:
+            import io
+            export_df = pd.DataFrame({
+                "age":        result["ages"],
+                "median":     result["median_trajectory"],
+                "p10":        result["p10_trajectory"],
+                "p90":        result["p90_trajectory"],
+                "taxes":      result["median_taxes"],
+                "healthcare": result["median_healthcare"],
+            })
+            st.download_button(
+                "📥  Export CSV",
+                export_df.to_csv(index=False),
+                file_name="montefire_results.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 
 # ── Tab 2: Asset Ledger ───────────────────────────────────────────────────────
@@ -395,6 +521,9 @@ def _render_asset_ledger() -> None:
     c2.metric("Taxable",         _fmt_dollar(by_tt["taxable"]))
     c3.metric("Tax-Deferred",    _fmt_dollar(by_tt["tax_deferred"]))
     c4.metric("Tax-Free",        _fmt_dollar(by_tt["tax_free"]))
+
+    # ── Tax treatment donut ───────────────────────────────────────────────────
+    st.plotly_chart(_allocation_donut(by_tt), use_container_width=False)
 
     st.divider()
 
@@ -579,6 +708,32 @@ def _render_cash_flows() -> None:
     )
     st.caption("ACA vs. Medicare coverage is determined automatically from each member's age in household.yaml.")
 
+    st.subheader("Advanced Options")
+    adv1, adv2 = st.columns(2)
+    with adv1:
+        sp["state_income_tax_rate"] = st.slider(
+            "State Income Tax Rate (%)", 0.0, 15.0,
+            float(sp.get("state_income_tax_rate", 0.0)), 0.25,
+            help="Flat rate applied to MAGI each year. Set to 0 for states with no income tax.",
+        )
+    with adv2:
+        st.caption("")   # vertical spacer
+
+    st.caption("**Roth Conversion Ladder** — convert tax-deferred dollars to Roth each year to reduce future RMDs and taxes.")
+    roth1, roth2 = st.columns(2)
+    with roth1:
+        sp["roth_conversion_annual"] = st.number_input(
+            "Annual Roth Conversion ($)", 0, 500_000,
+            int(sp.get("roth_conversion_annual", 0)), 5_000,
+            help="Amount moved from tax-deferred to Roth each year (taxable event).",
+        )
+    with roth2:
+        sp["roth_conversion_end_age"] = st.slider(
+            "Stop Conversions at Age", 50, 73,
+            int(sp.get("roth_conversion_end_age", 63)), 1,
+            help="Typically stop before ACA cliff age or RMD age (73).",
+        )
+
     if sp != st.session_state.sim_params:
         st.session_state.sim_params = sp
         _save_user_settings()
@@ -671,44 +826,50 @@ def _render_ai_copilot() -> None:
         ]
 
         params = _build_sim_params()
+        prev_compact = compact  # capture before potential tool call mutates sim_result
 
-        # Call agent
+        # Pass 1+2: tool detection and execution (synchronous)
+        with st.spinner("Thinking…"):
+            prep = prepare_response(
+                user_message=prompt,
+                history=history,
+                portfolio_state=st.session_state.portfolio_state,
+                sim_result=compact,
+                base_params=params,
+                config_dir=CONFIG_DIR,
+                model=st.session_state.llm_model,
+            )
+
+        # Pass 3: stream final response
         with st.chat_message("assistant"):
-            spinner_msg = "Thinking…"
-            with st.spinner(spinner_msg):
-                response = llm_chat(
-                    user_message=prompt,
-                    history=history,
-                    portfolio_state=st.session_state.portfolio_state,
-                    sim_result=compact,
-                    base_params=params,
-                    config_dir=CONFIG_DIR,
-                    model=st.session_state.llm_model,
-                )
-
-            if response.error:
-                st.error(f"LLM error: {response.error}")
-                reply_text = f"*(Error: {response.error})*"
+            if prep.error:
+                st.error(f"LLM error: {prep.error}")
+                reply_text = f"*(Error: {prep.error})*"
             else:
-                if response.tool_called:
-                    st.caption(f"🔧 Called `{response.tool_name}` — result verified by deterministic engine")
-                    # If a new simulation was run, update the dashboard result
-                    if response.tool_result:
-                        # Merge compact result back into a display-compatible format by
-                        # re-running at full fidelity so Dashboard charts update too
-                        if params is not None:
-                            tool_args = response.tool_args or {}
-                            _rerun_and_save(params, tool_args)
-                st.markdown(response.text)
-                reply_text = response.text
+                if prep.tool_called:
+                    st.caption(f"🔧 Called `{prep.tool_name}` — result verified by deterministic engine")
+                    if prep.tool_result and params is not None:
+                        _rerun_and_save(params, prep.tool_args or {})
+                    # Show what changed
+                    if prep.tool_result and prev_compact:
+                        old_sr = prev_compact.get("success_rate", 0)
+                        new_sr = prep.tool_result.get("success_rate", 0)
+                        if abs(new_sr - old_sr) >= 0.001:
+                            delta = new_sr - old_sr
+                            arrow = "▲" if delta > 0 else "▼"
+                            st.caption(
+                                f"Success rate: **{old_sr:.1%}** → **{new_sr:.1%}** "
+                                f"({arrow} {abs(delta):.1%})"
+                            )
+                reply_text = st.write_stream(stream_response(prep))
 
         # Persist to history
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         st.session_state.chat_history.append({
             "role": "assistant",
-            "content": reply_text,
-            "tool_called": response.tool_called,
-            "tool_name": response.tool_name,
+            "content": reply_text or "",
+            "tool_called": prep.tool_called,
+            "tool_name": prep.tool_name,
         })
 
     # ── Clear chat ────────────────────────────────────────────────────────────
@@ -744,6 +905,9 @@ def _rerun_and_save(base_params: SimulationParams, tool_args: dict) -> None:
         "ss_spouse_start_age":        base_params.ss_spouse_start_age,
         "pension_annual":             base_params.pension_annual,
         "tax_deferred_spouse_balance": base_params.tax_deferred_spouse_balance,
+        "state_income_tax_rate":       base_params.state_income_tax_rate,
+        "roth_conversion_annual":      base_params.roth_conversion_annual,
+        "roth_conversion_end_age":     base_params.roth_conversion_end_age,
         "num_iterations":             st.session_state.sim_params.get("num_iterations", 1_000),
     }
     valid = set(params_dict.keys())

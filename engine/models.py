@@ -41,6 +41,13 @@ class SimulationParams:
     # ── Return & inflation assumptions ───────────────────────────────────────
     healthcare_inflation_rate: float = 0.05   # medical costs inflate faster than CPI
 
+    # ── Tax assumptions ───────────────────────────────────────────────────────
+    state_income_tax_rate: float = 0.0        # flat rate applied to MAGI (0 = no state tax)
+
+    # ── Roth conversion ladder ────────────────────────────────────────────────
+    roth_conversion_annual: float = 0.0       # amount to convert per year (0 = disabled)
+    roth_conversion_end_age: int = 63         # stop converting at/after this age
+
     # ── Simulation config ─────────────────────────────────────────────────────
     num_iterations: int = 1_000
 
@@ -170,6 +177,10 @@ class SimulationResult:
     ages: list[int]
     num_iterations: int
     plan_to_age: int
+    # Per-bucket medians (for stacked depletion chart)
+    median_taxable: list[float] = field(default_factory=list)
+    median_tax_deferred: list[float] = field(default_factory=list)
+    median_tax_free: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -180,6 +191,9 @@ class SimulationResult:
             "p90_trajectory":     [round(v, 2) for v in self.p90_trajectory],
             "median_taxes":       [round(v, 2) for v in self.median_taxes],
             "median_healthcare":  [round(v, 2) for v in self.median_healthcare],
+            "median_taxable":     [round(v, 2) for v in self.median_taxable],
+            "median_tax_deferred":[round(v, 2) for v in self.median_tax_deferred],
+            "median_tax_free":    [round(v, 2) for v in self.median_tax_free],
             "num_iterations":     self.num_iterations,
             "plan_to_age":        self.plan_to_age,
         }

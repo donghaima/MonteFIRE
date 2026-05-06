@@ -83,6 +83,13 @@ def _simulate_one_run(
 
         spouse_age = float(age) + spouse_age_offset if spouse_age_offset is not None else None
 
+        # 1.5 Roth conversion (move from tax-deferred to tax-free before withdrawals)
+        roth_conversion = 0.0
+        if params.roth_conversion_annual > 0 and age < params.roth_conversion_end_age:
+            roth_conversion = min(params.roth_conversion_annual, buckets.tax_deferred)
+            buckets.tax_deferred -= roth_conversion
+            buckets.tax_free += roth_conversion
+
         # 2. Inflation-adjusted spending target
         inflation_factor = (1.0 + params.inflation_rate) ** idx
         spending = params.annual_spending_today * inflation_factor
@@ -105,11 +112,11 @@ def _simulate_one_run(
         bd_spend = route_withdrawal(buckets, float(age), net_needed, tax_cfg, spouse_age=spouse_age)
 
         # 6. Compute MAGI for tax and ACA purposes
-        #    MAGI = pension + tax-deferred withdrawals + realized cap gains
+        #    MAGI = Roth conversion + pension + tax-deferred withdrawals + realized cap gains
         #         + taxable fraction of Social Security
-        other_income = pension + bd_spend.ordinary_income + bd_spend.capital_gains
+        other_income = roth_conversion + pension + bd_spend.ordinary_income + bd_spend.capital_gains
         ss_taxable = compute_ss_taxable(ss, other_income, params.filing_status, tax_cfg)
-        total_ordinary = pension + bd_spend.ordinary_income + ss_taxable
+        total_ordinary = roth_conversion + pension + bd_spend.ordinary_income + ss_taxable
         magi = total_ordinary + bd_spend.capital_gains
 
         # 7. Healthcare — per-person ACA/Medicare routing + medical-cost inflation
@@ -123,13 +130,14 @@ def _simulate_one_run(
             tax_cfg=tax_cfg,
         ) * healthcare_inflation_factor
 
-        # 8. Federal taxes: income tax + capital gains tax + early-withdrawal penalty
+        # 8. Federal + state taxes: income tax + capital gains tax + penalty + state flat rate
         income_tax = compute_income_tax(total_ordinary, params.filing_status, tax_cfg)
         cg_tax = compute_capital_gains_tax(
             bd_spend.capital_gains, total_ordinary, params.filing_status, tax_cfg
         )
         penalty = compute_penalty(bd_spend.penalty_base, tax_cfg)
-        total_tax = income_tax + cg_tax + penalty
+        state_tax = magi * params.state_income_tax_rate
+        total_tax = income_tax + cg_tax + penalty + state_tax
 
         # 9. Pull taxes + healthcare from portfolio (second withdrawal, same priority order)
         #    This second pass may generate a small additional tax liability; we accept
@@ -182,18 +190,24 @@ def run_simulation(
     n_years = params.plan_to_age - int(params.current_age) + 1
     n = params.num_iterations
 
-    totals     = np.zeros((n, n_years))
-    taxes      = np.zeros((n, n_years))
-    healthcare = np.zeros((n, n_years))
-    successes  = 0
+    totals       = np.zeros((n, n_years))
+    taxes        = np.zeros((n, n_years))
+    healthcare   = np.zeros((n, n_years))
+    taxable_arr  = np.zeros((n, n_years))
+    tax_def_arr  = np.zeros((n, n_years))
+    tax_free_arr = np.zeros((n, n_years))
+    successes    = 0
 
     for i in range(n):
         snaps = _simulate_one_run(params, tax_cfg, rng)
         failed = False
         for yr, s in enumerate(snaps):
-            totals[i, yr]     = s.portfolio_total
-            taxes[i, yr]      = s.taxes_paid
-            healthcare[i, yr] = s.healthcare_cost
+            totals[i, yr]       = s.portfolio_total
+            taxes[i, yr]        = s.taxes_paid
+            healthcare[i, yr]   = s.healthcare_cost
+            taxable_arr[i, yr]  = s.taxable
+            tax_def_arr[i, yr]  = s.tax_deferred
+            tax_free_arr[i, yr] = s.tax_free
             if s.portfolio_total <= 0.0 and not failed:
                 failed = True
         if not failed:
@@ -211,6 +225,9 @@ def run_simulation(
         ages=ages,
         num_iterations=n,
         plan_to_age=params.plan_to_age,
+        median_taxable=np.median(taxable_arr, axis=0).tolist(),
+        median_tax_deferred=np.median(tax_def_arr, axis=0).tolist(),
+        median_tax_free=np.median(tax_free_arr, axis=0).tolist(),
     )
 
 
