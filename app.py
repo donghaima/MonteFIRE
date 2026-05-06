@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import yaml
 
 # Page config must be the very first Streamlit call
 st.set_page_config(
@@ -31,8 +32,10 @@ from llm.tools import _compact_sim_result  # noqa: E402
 
 # ── Paths & constants ─────────────────────────────────────────────────────────
 
-CONFIG_DIR = Path("config")
-PORTFOLIO_PATH = Path("output/portfolio_state.json")
+CONFIG_DIR      = Path("config")
+PORTFOLIO_PATH  = Path("output/portfolio_state.json")
+HOUSEHOLD_PATH  = Path("config/household.yaml")
+USER_SETTINGS_PATH = Path("config/user_settings.json")
 
 DEFAULT_CASH_FLOWS = pd.DataFrame([
     {"Name": "Core Living Expenses",      "Category": "Essential",     "Annual ($)": 60_000, "Active": True},
@@ -58,15 +61,44 @@ DEFAULT_SIM_PARAMS: dict = {
     "household_size":          2,
 }
 
+# ── User-settings persistence ────────────────────────────────────────────────
+
+def _load_user_settings() -> tuple[pd.DataFrame, dict]:
+    """Load cash flows and sim params from disk, falling back to defaults."""
+    if USER_SETTINGS_PATH.exists():
+        try:
+            data = json.loads(USER_SETTINGS_PATH.read_text())
+            cf = pd.DataFrame(data["cash_flows"])
+            sp = {**DEFAULT_SIM_PARAMS, **{
+                k: v for k, v in data.get("sim_params", {}).items()
+                if k in DEFAULT_SIM_PARAMS
+            }}
+            return cf, sp
+        except Exception:
+            pass
+    return DEFAULT_CASH_FLOWS.copy(), DEFAULT_SIM_PARAMS.copy()
+
+
+def _save_user_settings() -> None:
+    """Persist current cash flows and sim params to disk."""
+    data = {
+        "cash_flows": st.session_state.cash_flows.to_dict(orient="records"),
+        "sim_params": st.session_state.sim_params,
+    }
+    USER_SETTINGS_PATH.write_text(json.dumps(data, indent=2, default=str))
+
+
 # ── Session-state initialisation ──────────────────────────────────────────────
 
 def _init_state() -> None:
     if "portfolio_state" not in st.session_state:
         st.session_state.portfolio_state = _load_portfolio()
-    if "cash_flows" not in st.session_state:
-        st.session_state.cash_flows = DEFAULT_CASH_FLOWS.copy()
-    if "sim_params" not in st.session_state:
-        st.session_state.sim_params = DEFAULT_SIM_PARAMS.copy()
+    if "cash_flows" not in st.session_state or "sim_params" not in st.session_state:
+        cf, sp = _load_user_settings()
+        if "cash_flows" not in st.session_state:
+            st.session_state.cash_flows = cf
+        if "sim_params" not in st.session_state:
+            st.session_state.sim_params = sp
     if "sim_result" not in st.session_state:
         st.session_state.sim_result = None
     if "chat_history" not in st.session_state:
@@ -460,7 +492,11 @@ def _render_cash_flows() -> None:
         use_container_width=True,
         hide_index=True,
     )
-    st.session_state.cash_flows = edited
+    if not edited.equals(st.session_state.cash_flows):
+        st.session_state.cash_flows = edited
+        _save_user_settings()
+    else:
+        st.session_state.cash_flows = edited
 
     # Derived totals
     active  = edited[edited["Active"]]
@@ -521,7 +557,11 @@ def _render_cash_flows() -> None:
     )
     st.caption("ACA vs. Medicare coverage is determined automatically from each member's age in household.yaml.")
 
-    st.session_state.sim_params = sp
+    if sp != st.session_state.sim_params:
+        st.session_state.sim_params = sp
+        _save_user_settings()
+    else:
+        st.session_state.sim_params = sp
 
     # Real-time parameter summary callout
     real_return = sp["mean_annual_return"] - sp["inflation_rate"]
@@ -690,6 +730,124 @@ def _rerun_and_save(base_params: SimulationParams, tool_args: dict) -> None:
         pass  # dashboard keeps previous result
 
 
+# ── Tab 5: Settings ───────────────────────────────────────────────────────────
+
+def _render_settings() -> None:
+    from datetime import date
+
+    if not HOUSEHOLD_PATH.exists():
+        st.error(f"Household config not found at `{HOUSEHOLD_PATH}`.")
+        return
+
+    household = yaml.safe_load(HOUSEHOLD_PATH.read_text())
+    members   = household.get("members", [])
+
+    # ── Household members ─────────────────────────────────────────────────────
+    st.subheader("Household Members")
+    st.caption("Edit names and birth dates. Changes take effect after saving and re-running the ETL pipeline.")
+
+    today = date.today()
+    age_notes = []
+    for m in members:
+        try:
+            age = (today - date.fromisoformat(m["birth_date"])).days / 365.25
+            age_notes.append(f"**{m['name']}** — currently age {age:.1f}")
+        except ValueError:
+            age_notes.append(f"**{m['name']}** — invalid birth date")
+    if age_notes:
+        st.info("  ·  ".join(age_notes))
+
+    member_df = pd.DataFrame([
+        {"Name": m["name"], "Birth Date": m["birth_date"], "Role": m["role"]}
+        for m in members
+    ])
+    edited_members = st.data_editor(
+        member_df,
+        column_config={
+            "Name":       st.column_config.TextColumn("Name", required=True),
+            "Birth Date": st.column_config.TextColumn("Birth Date (YYYY-MM-DD)", required=True),
+            "Role":       st.column_config.SelectboxColumn(
+                              "Role", options=["primary", "spouse"], required=True),
+        },
+        num_rows="fixed",
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.divider()
+
+    # ── Account ownership rules ───────────────────────────────────────────────
+    st.subheader("Account Ownership Rules")
+    st.caption(
+        "Regex patterns matched against account names from CSV exports. "
+        "First match wins — keep the catch-all `.*` row last."
+    )
+
+    id_to_name = {m["id"]: m["name"] for m in members}
+    name_to_id = {m["name"]: m["id"] for m in members}
+    member_names = list(name_to_id.keys())
+
+    map_df = pd.DataFrame([
+        {"Match Pattern": r["match"], "Owner": id_to_name.get(r["owner_id"], r["owner_id"])}
+        for r in household.get("account_owner_map", [])
+    ])
+    edited_map = st.data_editor(
+        map_df,
+        column_config={
+            "Match Pattern": st.column_config.TextColumn(
+                "Match Pattern (regex)", required=True, width="large"),
+            "Owner": st.column_config.SelectboxColumn(
+                "Owner", options=member_names, required=True, width="medium"),
+        },
+        num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.divider()
+
+    if st.button("💾  Save Household Settings", type="primary", use_container_width=False):
+        # Validate birth dates before saving
+        errors = []
+        for _, row in edited_members.iterrows():
+            try:
+                date.fromisoformat(row["Birth Date"])
+            except ValueError:
+                errors.append(f"Invalid date for {row['Name']}: `{row['Birth Date']}` — use YYYY-MM-DD.")
+        if errors:
+            for e in errors:
+                st.error(e)
+            return
+
+        # Preserve original member IDs (keyed by role)
+        id_by_role = {m["role"]: m["id"] for m in members}
+        household["members"] = [
+            {
+                "id":         id_by_role.get(row["Role"], f"member-{row['Role']}"),
+                "name":       row["Name"],
+                "birth_date": row["Birth Date"],
+                "role":       row["Role"],
+            }
+            for _, row in edited_members.iterrows()
+        ]
+        household["account_owner_map"] = [
+            {
+                "match":    row["Match Pattern"],
+                "owner_id": name_to_id.get(row["Owner"], row["Owner"]),
+            }
+            for _, row in edited_map.iterrows()
+        ]
+
+        HOUSEHOLD_PATH.write_text(
+            yaml.dump(household, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        )
+        # Reset portfolio so ages reload from updated birth dates
+        st.session_state.portfolio_state = _load_portfolio()
+        st.session_state.sim_result = None
+        st.success("Saved. Re-run the ETL pipeline in the sidebar to apply account ownership changes.")
+        st.rerun()
+
+
 # ── App entry point ───────────────────────────────────────────────────────────
 
 _init_state()
@@ -700,11 +858,12 @@ as_of = ps["generated_at"][:10] if ps else "—"
 st.title("MonteFIRE — Family Finance Simulator")
 st.caption(f"Portfolio snapshot: {as_of}  ·  All computation runs locally (air-gapped).")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊  Dashboard",
     "📋  Asset Ledger",
     "💰  Cash Flow & Rules",
     "🤖  AI Co-Pilot",
+    "⚙️  Settings",
 ])
 
 with tab1:
@@ -715,3 +874,5 @@ with tab3:
     _render_cash_flows()
 with tab4:
     _render_ai_copilot()
+with tab5:
+    _render_settings()
