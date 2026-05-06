@@ -31,9 +31,15 @@ class SimulationParams:
 
     # ── Cash flows (today's dollars; engine inflation-adjusts internally) ─────
     annual_spending_today: float = 80_000  # non-healthcare living expenses
-    social_security_annual: float = 0.0
+    social_security_annual: float = 0.0       # primary member's SS benefit
     social_security_start_age: int = 67
-    pension_annual: float = 0.0            # treated as fixed nominal (not inflation-adjusted)
+    ss_spouse_annual: float = 0.0             # spouse SS benefit (0 = none / not yet active)
+    ss_spouse_start_age: int = 67
+    pension_annual: float = 0.0               # other passive income; fixed nominal
+    tax_deferred_spouse_balance: float = 0.0  # spouse-owned tax-deferred accounts
+
+    # ── Return & inflation assumptions ───────────────────────────────────────
+    healthcare_inflation_rate: float = 0.05   # medical costs inflate faster than CPI
 
     # ── Simulation config ─────────────────────────────────────────────────────
     num_iterations: int = 1_000
@@ -48,13 +54,6 @@ class SimulationParams:
         then apply any overrides (spending, age, etc.) from the caller.
         """
         summary = state["summary"]["by_tax_treatment"]
-
-        # Compute aggregate cost basis from taxable holdings
-        taxable_basis = 0.0
-        for acct in state.get("accounts", []):
-            if acct["tax_treatment"] == "taxable":
-                for h in acct.get("holdings", []):
-                    taxable_basis += h.get("cost_basis_usd", 0.0)
 
         # Pull member ages from birth dates
         members = state.get("owner", {}).get("members", [])
@@ -74,13 +73,34 @@ class SimulationParams:
             bd = date.fromisoformat(spouse["birth_date"])
             spouse_current_age = round((today - bd).days / 365.25, 2)
 
+        primary_id = primary.get("id") if primary else None
+        spouse_id  = spouse.get("id")  if spouse  else None
+
+        # Split balances by account ownership
+        taxable_basis = 0.0
+        tax_deferred_primary = 0.0
+        tax_deferred_spouse  = 0.0
+        for acct in state.get("accounts", []):
+            owner = acct.get("owner_id")
+            tt    = acct["tax_treatment"]
+            bal   = acct.get("balance_usd", 0.0)
+            if tt == "taxable":
+                for h in acct.get("holdings", []):
+                    taxable_basis += h.get("cost_basis_usd", 0.0)
+            elif tt == "tax_deferred":
+                if spouse_id and owner == spouse_id:
+                    tax_deferred_spouse += bal
+                else:
+                    tax_deferred_primary += bal
+
         params = cls(
             taxable_balance=summary.get("taxable", 0.0),
             taxable_basis=taxable_basis,
-            tax_deferred_balance=summary.get("tax_deferred", 0.0),
+            tax_deferred_balance=tax_deferred_primary or summary.get("tax_deferred", 0.0),
             tax_free_balance=summary.get("tax_free", 0.0),
             current_age=round(current_age, 2),
             spouse_current_age=spouse_current_age,
+            tax_deferred_spouse_balance=tax_deferred_spouse,
         )
         if overrides:
             for k, v in overrides.items():
@@ -93,19 +113,25 @@ class Buckets:
     """Mutable per-run account balances tracked through the simulation."""
     taxable: float
     taxable_basis: float    # tracks realized cost basis; decreases as we sell
-    tax_deferred: float
+    tax_deferred: float     # primary member's tax-deferred accounts
     tax_free: float
+    tax_deferred_spouse: float = 0.0  # spouse's tax-deferred (separate for RMD)
 
     def total(self) -> float:
-        return max(0.0, self.taxable + self.tax_deferred + self.tax_free)
+        return max(0.0, self.taxable + self.tax_deferred + self.tax_deferred_spouse + self.tax_free)
 
     def clone(self) -> "Buckets":
-        return Buckets(self.taxable, self.taxable_basis, self.tax_deferred, self.tax_free)
+        return Buckets(
+            self.taxable, self.taxable_basis,
+            self.tax_deferred, self.tax_free,
+            self.tax_deferred_spouse,
+        )
 
     def apply_return(self, rate: float) -> None:
         """Grow all buckets by rate. Taxable basis stays fixed (unrealized gains accumulate)."""
         self.taxable = max(0.0, self.taxable * (1.0 + rate))
         self.tax_deferred = max(0.0, self.tax_deferred * (1.0 + rate))
+        self.tax_deferred_spouse = max(0.0, self.tax_deferred_spouse * (1.0 + rate))
         self.tax_free = max(0.0, self.tax_free * (1.0 + rate))
 
 

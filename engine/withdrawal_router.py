@@ -24,10 +24,15 @@ def route_withdrawal(
     age: float,
     needed: float,
     tax_cfg: dict,
+    spouse_age: float | None = None,
 ) -> WithdrawalBreakdown:
     """
     Pull `needed` dollars from buckets, mutating balances in place.
     Returns a breakdown of income types generated (used by tax_engine).
+
+    RMDs are computed per person from their own tax-deferred bucket.
+    Discretionary withdrawals treat both tax-deferred buckets as one pool
+    (primary's bucket first).
     """
     if needed <= 0.0:
         return WithdrawalBreakdown()
@@ -35,16 +40,27 @@ def route_withdrawal(
     bd = WithdrawalBreakdown()
     remaining = needed
 
-    # ── Step 1: Force RMD from tax-deferred if age >= 73 ─────────────────────
-    if rmd_required(age, tax_cfg) and buckets.tax_deferred > 0.0:
-        rmd = compute_rmd(buckets.tax_deferred, int(age), tax_cfg)
-        rmd_pulled = min(rmd, buckets.tax_deferred)
-        buckets.tax_deferred -= rmd_pulled
-        bd.ordinary_income += rmd_pulled
-        bd.rmd_amount = rmd_pulled
-        # RMD counts toward the year's cash need; any excess is reinvested (approximated
-        # here by simply reducing the remaining need — close enough for simulation)
-        remaining = max(0.0, remaining - rmd_pulled)
+    # ── Step 1: Force RMDs ────────────────────────────────────────────────────
+    def _pull_rmd(balance_attr: str, rmd_age: int) -> float:
+        bal = getattr(buckets, balance_attr)
+        if bal <= 0.0:
+            return 0.0
+        rmd = compute_rmd(bal, rmd_age, tax_cfg)
+        pulled = min(rmd, bal)
+        setattr(buckets, balance_attr, bal - pulled)
+        return pulled
+
+    if rmd_required(age, tax_cfg):
+        pulled = _pull_rmd("tax_deferred", int(age))
+        bd.ordinary_income += pulled
+        bd.rmd_amount      += pulled
+        remaining = max(0.0, remaining - pulled)
+
+    if spouse_age is not None and rmd_required(spouse_age, tax_cfg):
+        pulled = _pull_rmd("tax_deferred_spouse", int(spouse_age))
+        bd.ordinary_income += pulled
+        bd.rmd_amount      += pulled
+        remaining = max(0.0, remaining - pulled)
 
     # ── Step 2: Discretionary withdrawals in priority order ───────────────────
     penalty_free_age: float = tax_cfg["penalty_free_age"]
@@ -61,31 +77,27 @@ def route_withdrawal(
             available = buckets.taxable
             pull = min(remaining, available)
             if pull > 0.0:
-                # Gain ratio: proportion of each dollar that is long-term capital gain
-                if buckets.taxable > 0.0:
-                    gain_ratio = max(0.0, min(1.0,
-                        (buckets.taxable - buckets.taxable_basis) / buckets.taxable
-                    ))
-                else:
-                    gain_ratio = 0.0
-
-                cap_gain = pull * gain_ratio
-                basis_used = pull * (1.0 - gain_ratio)
-
-                bd.capital_gains += cap_gain
+                gain_ratio = max(0.0, min(1.0,
+                    (buckets.taxable - buckets.taxable_basis) / buckets.taxable
+                )) if buckets.taxable > 0.0 else 0.0
+                bd.capital_gains += pull * gain_ratio
                 buckets.taxable -= pull
-                buckets.taxable_basis = max(0.0, buckets.taxable_basis - basis_used)
+                buckets.taxable_basis = max(0.0, buckets.taxable_basis - pull * (1.0 - gain_ratio))
                 remaining -= pull
 
         elif bucket == "tax_deferred":
-            available = buckets.tax_deferred
-            pull = min(remaining, available)
-            if pull > 0.0:
-                buckets.tax_deferred -= pull
-                bd.ordinary_income += pull
-                if age < penalty_free_age:
-                    bd.penalty_base += pull   # 10% penalty assessed by tax_engine
-                remaining -= pull
+            # Draw from primary's bucket first, then spouse's
+            for attr in ("tax_deferred", "tax_deferred_spouse"):
+                if remaining <= 0.0:
+                    break
+                available = getattr(buckets, attr)
+                pull = min(remaining, available)
+                if pull > 0.0:
+                    setattr(buckets, attr, available - pull)
+                    bd.ordinary_income += pull
+                    if age < penalty_free_age:
+                        bd.penalty_base += pull
+                    remaining -= pull
 
         elif bucket == "tax_free":
             available = buckets.tax_free

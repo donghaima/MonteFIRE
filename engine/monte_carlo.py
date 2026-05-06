@@ -52,6 +52,7 @@ def _simulate_one_run(
         taxable_basis=params.taxable_basis,
         tax_deferred=params.tax_deferred_balance,
         tax_free=params.tax_free_balance,
+        tax_deferred_spouse=params.tax_deferred_spouse_balance,
     )
 
     start_age = int(params.current_age)
@@ -80,20 +81,28 @@ def _simulate_one_run(
         # 1. Apply investment return (beginning-of-year growth)
         buckets.apply_return(annual_returns[idx])
 
+        spouse_age = float(age) + spouse_age_offset if spouse_age_offset is not None else None
+
         # 2. Inflation-adjusted spending target
         inflation_factor = (1.0 + params.inflation_rate) ** idx
         spending = params.annual_spending_today * inflation_factor
 
-        # 3. Passive income
-        ss = params.social_security_annual if age >= params.social_security_start_age else 0.0
+        # 3. Passive income — SS computed per person by their own claim age
+        ss_primary = params.social_security_annual if age >= params.social_security_start_age else 0.0
+        ss_spouse_income = (
+            params.ss_spouse_annual
+            if spouse_age is not None and spouse_age >= params.ss_spouse_start_age
+            else 0.0
+        )
+        ss = ss_primary + ss_spouse_income
         pension = params.pension_annual
         passive = ss + pension
 
         # 4. Net cash needed from portfolio (spending, not yet including taxes / healthcare)
         net_needed = max(0.0, spending - passive)
 
-        # 5. Withdraw for spending
-        bd_spend = route_withdrawal(buckets, float(age), net_needed, tax_cfg)
+        # 5. Withdraw for spending (pass spouse_age so router can force spouse RMD)
+        bd_spend = route_withdrawal(buckets, float(age), net_needed, tax_cfg, spouse_age=spouse_age)
 
         # 6. Compute MAGI for tax and ACA purposes
         #    MAGI = pension + tax-deferred withdrawals + realized cap gains
@@ -103,8 +112,8 @@ def _simulate_one_run(
         total_ordinary = pension + bd_spend.ordinary_income + ss_taxable
         magi = total_ordinary + bd_spend.capital_gains
 
-        # 7. Healthcare cost — each person routed to ACA or Medicare by their own age
-        spouse_age = float(age) + spouse_age_offset if spouse_age_offset is not None else None
+        # 7. Healthcare — per-person ACA/Medicare routing + medical-cost inflation
+        healthcare_inflation_factor = (1.0 + params.healthcare_inflation_rate) ** idx
         healthcare = compute_healthcare_cost(
             primary_age=float(age),
             spouse_age=spouse_age,
@@ -112,7 +121,7 @@ def _simulate_one_run(
             household_size=params.household_size,
             filing_status=params.filing_status,
             tax_cfg=tax_cfg,
-        )
+        ) * healthcare_inflation_factor
 
         # 8. Federal taxes: income tax + capital gains tax + early-withdrawal penalty
         income_tax = compute_income_tax(total_ordinary, params.filing_status, tax_cfg)
@@ -126,7 +135,7 @@ def _simulate_one_run(
         #    This second pass may generate a small additional tax liability; we accept
         #    that approximation rather than iterating to convergence.
         extra_needed = total_tax + healthcare
-        bd_extra = route_withdrawal(buckets, float(age), extra_needed, tax_cfg)
+        bd_extra = route_withdrawal(buckets, float(age), extra_needed, tax_cfg, spouse_age=spouse_age)
 
         # 10. Record
         total_ordinary_all = total_ordinary + bd_extra.ordinary_income

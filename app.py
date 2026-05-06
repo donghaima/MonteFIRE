@@ -57,8 +57,10 @@ DEFAULT_SIM_PARAMS: dict = {
     "plan_to_age":            90,
     "num_iterations":       1_000,
     "social_security_start_age": 67,
+    "ss_spouse_start_age":    67,
     "filing_status":          "married_filing_jointly",
     "household_size":          2,
+    "healthcare_inflation_rate": 5.0,
 }
 
 # ── User-settings persistence ────────────────────────────────────────────────
@@ -129,17 +131,29 @@ def _build_sim_params() -> SimulationParams | None:
 
     active = cf[cf["Active"]]
     annual_expenses = float(active[active["Category"] != "Income"]["Annual ($)"].sum())
-    annual_income   = float(active[active["Category"] == "Income"]["Annual ($)"].sum())
+
+    income_rows = active[active["Category"] == "Income"]
+    is_ss_primary = income_rows["Name"].str.contains("Primary", case=False, na=False) & \
+                    income_rows["Name"].str.contains("Security|SS", case=False, na=False)
+    is_ss_spouse  = income_rows["Name"].str.contains("Spouse",  case=False, na=False) & \
+                    income_rows["Name"].str.contains("Security|SS", case=False, na=False)
+    ss_primary_amt = float(income_rows[is_ss_primary]["Annual ($)"].sum())
+    ss_spouse_amt  = float(income_rows[is_ss_spouse]["Annual ($)"].sum())
+    pension_amt    = float(income_rows[~(is_ss_primary | is_ss_spouse)]["Annual ($)"].sum())
 
     return SimulationParams.from_portfolio_state(
         ps,
         overrides={
             "annual_spending_today":      annual_expenses,
-            "social_security_annual":     annual_income,
+            "social_security_annual":     ss_primary_amt,
             "social_security_start_age":  int(sp["social_security_start_age"]),
+            "ss_spouse_annual":           ss_spouse_amt,
+            "ss_spouse_start_age":        int(sp["ss_spouse_start_age"]),
+            "pension_annual":             pension_amt,
             "mean_annual_return":         sp["mean_annual_return"] / 100.0,
             "return_std_dev":             sp["return_std_dev"] / 100.0,
             "inflation_rate":             sp["inflation_rate"] / 100.0,
+            "healthcare_inflation_rate":  sp["healthcare_inflation_rate"] / 100.0,
             "plan_to_age":                int(sp["plan_to_age"]),
             "num_iterations":             int(sp["num_iterations"]),
             "filing_status":              sp["filing_status"],
@@ -539,8 +553,10 @@ def _render_cash_flows() -> None:
             value=min(int(sp["num_iterations"]), 5_000),
         )
         sp["social_security_start_age"] = st.slider(
-            "Social Security Claim Age", 62, 70, int(sp["social_security_start_age"]), 1,
-            help="Age at which the Income items above begin.",
+            "Primary SS Claim Age", 62, 70, int(sp["social_security_start_age"]), 1,
+        )
+        sp["ss_spouse_start_age"] = st.slider(
+            "Spouse SS Claim Age", 62, 70, int(sp.get("ss_spouse_start_age", 67)), 1,
         )
 
     sp["filing_status"] = st.radio(
@@ -551,9 +567,15 @@ def _render_cash_flows() -> None:
         index=0 if sp["filing_status"] == "married_filing_jointly" else 1,
     )
 
-    sp["household_size"] = st.number_input(
+    c1, c2 = st.columns(2)
+    sp["household_size"] = c1.number_input(
         "Household Size", 1, 8, int(sp["household_size"]), 1,
         help="Used to compute the Federal Poverty Level for ACA subsidy calculations.",
+    )
+    sp["healthcare_inflation_rate"] = c2.slider(
+        "Healthcare Inflation (%)", 1.0, 10.0,
+        float(sp.get("healthcare_inflation_rate", 5.0)), 0.5,
+        help="Medical costs typically inflate at 5–7%/yr, faster than general CPI.",
     )
     st.caption("ACA vs. Medicare coverage is determined automatically from each member's age in household.yaml.")
 
@@ -708,17 +730,21 @@ def _rerun_and_save(base_params: SimulationParams, tool_args: dict) -> None:
         "tax_free_balance":       base_params.tax_free_balance,
         "current_age":            base_params.current_age,
         "plan_to_age":            base_params.plan_to_age,
-        "filing_status":          base_params.filing_status,
-        "household_size":         base_params.household_size,
-        "spouse_current_age":     base_params.spouse_current_age,
-        "mean_annual_return":     base_params.mean_annual_return,
-        "return_std_dev":         base_params.return_std_dev,
-        "inflation_rate":         base_params.inflation_rate,
-        "annual_spending_today":  base_params.annual_spending_today,
-        "social_security_annual": base_params.social_security_annual,
-        "social_security_start_age": base_params.social_security_start_age,
-        "pension_annual":         base_params.pension_annual,
-        "num_iterations":         st.session_state.sim_params.get("num_iterations", 1_000),
+        "filing_status":              base_params.filing_status,
+        "household_size":             base_params.household_size,
+        "spouse_current_age":         base_params.spouse_current_age,
+        "mean_annual_return":         base_params.mean_annual_return,
+        "return_std_dev":             base_params.return_std_dev,
+        "inflation_rate":             base_params.inflation_rate,
+        "healthcare_inflation_rate":  base_params.healthcare_inflation_rate,
+        "annual_spending_today":      base_params.annual_spending_today,
+        "social_security_annual":     base_params.social_security_annual,
+        "social_security_start_age":  base_params.social_security_start_age,
+        "ss_spouse_annual":           base_params.ss_spouse_annual,
+        "ss_spouse_start_age":        base_params.ss_spouse_start_age,
+        "pension_annual":             base_params.pension_annual,
+        "tax_deferred_spouse_balance": base_params.tax_deferred_spouse_balance,
+        "num_iterations":             st.session_state.sim_params.get("num_iterations", 1_000),
     }
     valid = set(params_dict.keys())
     for k, v in tool_args.items():

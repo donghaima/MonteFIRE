@@ -158,17 +158,21 @@ def _exec_run_monte_carlo(
         "tax_free_balance":        base.tax_free_balance,
         "current_age":             base.current_age,
         "plan_to_age":             base.plan_to_age,
-        "filing_status":           base.filing_status,
-        "household_size":          base.household_size,
-        "spouse_current_age":      base.spouse_current_age,
-        "mean_annual_return":      base.mean_annual_return,
-        "return_std_dev":          base.return_std_dev,
-        "inflation_rate":          base.inflation_rate,
-        "annual_spending_today":   base.annual_spending_today,
-        "social_security_annual":  base.social_security_annual,
-        "social_security_start_age": base.social_security_start_age,
-        "pension_annual":          base.pension_annual,
-        "num_iterations":          500,   # faster for interactive use
+        "filing_status":              base.filing_status,
+        "household_size":             base.household_size,
+        "spouse_current_age":         base.spouse_current_age,
+        "mean_annual_return":         base.mean_annual_return,
+        "return_std_dev":             base.return_std_dev,
+        "inflation_rate":             base.inflation_rate,
+        "healthcare_inflation_rate":  base.healthcare_inflation_rate,
+        "annual_spending_today":      base.annual_spending_today,
+        "social_security_annual":     base.social_security_annual,
+        "social_security_start_age":  base.social_security_start_age,
+        "ss_spouse_annual":           base.ss_spouse_annual,
+        "ss_spouse_start_age":        base.ss_spouse_start_age,
+        "pension_annual":             base.pension_annual,
+        "tax_deferred_spouse_balance": base.tax_deferred_spouse_balance,
+        "num_iterations":             500,   # faster for interactive use
     }
     # Apply LLM overrides (only keys that appear in SimulationParams)
     valid_keys = set(params_dict.keys())

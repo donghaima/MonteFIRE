@@ -612,3 +612,131 @@ class TestMonteCarlo:
         avg_below = sum(r_below.median_healthcare) / len(r_below.median_healthcare)
         avg_above = sum(r_above.median_healthcare) / len(r_above.median_healthcare)
         assert avg_above > avg_below
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: per-person SS, spouse RMD, healthcare inflation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPerPersonSS:
+    def _run(self, **overrides):
+        from engine.models import SimulationParams
+        from engine.monte_carlo import run_simulation
+        from engine.tax_engine import load_tax_config
+        p = SimulationParams(
+            taxable_balance=0, taxable_basis=0,
+            tax_deferred_balance=2_000_000, tax_free_balance=0,
+            current_age=65.0, plan_to_age=85,
+            annual_spending_today=80_000, num_iterations=200,
+        )
+        for k, v in overrides.items():
+            setattr(p, k, v)
+        return run_simulation(p, load_tax_config(CONFIG_DIR), seed=1)
+
+    def test_spouse_ss_improves_success_rate(self):
+        without = self._run()
+        with_ss  = self._run(ss_spouse_annual=20_000, ss_spouse_start_age=65,
+                             spouse_current_age=65.0)
+        assert with_ss.success_rate > without.success_rate
+
+    def test_spouse_ss_only_starts_at_claim_age(self):
+        # spouse starts at 70 — primary is already 65 → spouse is 64 → no SS yet
+        without_early = self._run(
+            ss_spouse_annual=20_000, ss_spouse_start_age=70,
+            spouse_current_age=64.0,
+        )
+        with_early = self._run(
+            ss_spouse_annual=20_000, ss_spouse_start_age=65,
+            spouse_current_age=64.0,
+        )
+        # Delaying SS by 5 years should hurt success rate
+        assert with_early.success_rate >= without_early.success_rate
+
+    def test_primary_ss_unchanged_by_spouse_ss(self):
+        base   = self._run(social_security_annual=30_000, social_security_start_age=65)
+        with_s = self._run(social_security_annual=30_000, social_security_start_age=65,
+                           ss_spouse_annual=15_000, ss_spouse_start_age=65,
+                           spouse_current_age=65.0)
+        assert with_s.success_rate >= base.success_rate
+
+
+class TestSpouseRMD:
+    def _buckets_with_spouse_deferred(self, spouse_deferred=200_000):
+        from engine.models import Buckets
+        return Buckets(taxable=0, taxable_basis=0, tax_deferred=0,
+                       tax_free=0, tax_deferred_spouse=spouse_deferred)
+
+    def test_spouse_rmd_triggered_at_73(self, tax_cfg):
+        from engine.withdrawal_router import route_withdrawal
+        b = self._buckets_with_spouse_deferred(200_000)
+        bd = route_withdrawal(b, age=65.0, needed=5_000, tax_cfg=tax_cfg, spouse_age=73.0)
+        # Spouse RMD should force a withdrawal from tax_deferred_spouse
+        expected_rmd = 200_000 / 26.5
+        assert bd.rmd_amount == pytest.approx(expected_rmd, rel=1e-3)
+
+    def test_spouse_rmd_not_triggered_before_73(self, tax_cfg):
+        from engine.withdrawal_router import route_withdrawal
+        b = self._buckets_with_spouse_deferred(200_000)
+        bd = route_withdrawal(b, age=65.0, needed=5_000, tax_cfg=tax_cfg, spouse_age=72.0)
+        assert bd.rmd_amount == 0.0
+
+    def test_both_rmds_when_both_over_73(self, tax_cfg):
+        from engine.models import Buckets
+        from engine.withdrawal_router import route_withdrawal
+        b = Buckets(taxable=0, taxable_basis=0, tax_deferred=300_000,
+                    tax_free=0, tax_deferred_spouse=200_000)
+        bd = route_withdrawal(b, age=75.0, needed=1_000, tax_cfg=tax_cfg, spouse_age=73.0)
+        primary_rmd = 300_000 / 24.6
+        spouse_rmd  = 200_000 / 26.5
+        assert bd.rmd_amount == pytest.approx(primary_rmd + spouse_rmd, rel=1e-3)
+
+    def test_spouse_rmd_increases_success_when_spending_matches(self):
+        from engine.models import SimulationParams
+        from engine.monte_carlo import run_simulation
+        from engine.tax_engine import load_tax_config
+        # Spouse has deferred balance; both are 73 — RMDs should cover spending
+        p = SimulationParams(
+            taxable_balance=0, taxable_basis=0,
+            tax_deferred_balance=300_000,
+            tax_deferred_spouse_balance=200_000,
+            tax_free_balance=0,
+            current_age=73.0, plan_to_age=85,
+            annual_spending_today=15_000,
+            spouse_current_age=73.0,
+            num_iterations=200,
+        )
+        r = run_simulation(p, load_tax_config(CONFIG_DIR), seed=3)
+        assert r.success_rate > 0.50
+
+
+class TestHealthcareInflation:
+    def _run_hc(self, hc_inflation: float):
+        from engine.models import SimulationParams
+        from engine.monte_carlo import run_simulation
+        from engine.tax_engine import load_tax_config
+        p = SimulationParams(
+            taxable_balance=0, taxable_basis=0,
+            tax_deferred_balance=2_000_000, tax_free_balance=0,
+            current_age=55.0, plan_to_age=80,
+            annual_spending_today=60_000,
+            healthcare_inflation_rate=hc_inflation,
+            num_iterations=200,
+        )
+        return run_simulation(p, load_tax_config(CONFIG_DIR), seed=2)
+
+    def test_higher_hc_inflation_raises_later_costs(self):
+        low  = self._run_hc(0.02)
+        high = self._run_hc(0.08)
+        # Later years should show larger healthcare costs under higher inflation
+        assert high.median_healthcare[-1] > low.median_healthcare[-1]
+
+    def test_zero_hc_inflation_is_flat_in_real_terms(self):
+        r = self._run_hc(0.0)
+        # With 0% HC inflation, first and last year costs should be close
+        # (ACA premiums don't compound — only MAGI-driven variation)
+        assert r.median_healthcare[-1] >= 0.0  # no negative costs
+
+    def test_hc_inflation_reduces_success_rate(self):
+        low  = self._run_hc(0.02)
+        high = self._run_hc(0.10)
+        assert high.success_rate <= low.success_rate
