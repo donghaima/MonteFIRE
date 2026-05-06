@@ -46,6 +46,67 @@ Edit `config/household.yaml` to set member birth dates and map account numbers t
 
 Requires [Ollama](https://ollama.com) running locally. Pull any supported model (e.g. `ollama pull llama3`) and select it in the Co-Pilot tab. The LLM has access to one tool — `run_monte_carlo` — and is prompted to call it before answering any quantitative question.
 
+## Usage
+
+### Step 1 — Configure your household
+
+Edit `config/household.yaml` with each member's birth date and role. The `account_owner_map` ties account name substrings to household members (first match wins).
+
+### Step 2 — Import your portfolio
+
+Download CSV exports from your brokerage and place them in the `raw/` directory:
+
+| Institution | How to export | Expected filename pattern |
+|-------------|--------------|--------------------------|
+| Fidelity | Positions → Download → CSV | `Portfolio_Positions_*.csv` |
+| Empower | Holdings → Export | `Empower_Holdings_*.csv` |
+
+Then run the ETL pipeline (or click **Re-run ETL** in the sidebar):
+
+```bash
+python -m etl.parser
+```
+
+This produces `output/portfolio_state.json` and populates the Asset Ledger tab.
+
+### Step 3 — Set simulation parameters
+
+Use the sidebar to configure:
+- **Ages** — current age and the age to simulate through
+- **Return assumptions** — mean annual return and volatility
+- **Inflation rate**
+
+### Step 4 — Edit your cash flows (Tab 3)
+
+The **Cash Flow & Rules** tab shows an editable grid of income and expense rows. Toggle rows on/off and edit amounts directly. Key rows:
+- **Essential expenses** — housing, food, utilities
+- **Social Security** — set your expected benefit and start age
+- **Discretionary** — travel, gear, etc. (easy to toggle for what-if scenarios)
+
+Changes take effect immediately when you click **Run Simulation**.
+
+### Step 5 — Run the simulation (Tab 1)
+
+Click **Run Simulation** on the Dashboard tab. The engine runs 1,000 Monte Carlo iterations and displays:
+- **Success rate** — percentage of scenarios where the portfolio survives to plan age
+- **Trajectory chart** — median portfolio value with p10/p90 confidence band
+- **Tax & healthcare trends** — annual breakdown over the simulation horizon
+
+### Step 6 — Ask the AI co-pilot (Tab 4)
+
+Start [Ollama](https://ollama.com) and pull a model:
+
+```bash
+ollama pull llama3.2
+```
+
+Select the model in the Co-Pilot tab and ask questions like:
+- *"What happens if I retire 2 years earlier?"*
+- *"How sensitive is my success rate to spending $10k more per year?"*
+- *"Explain the healthcare cost spike at age 63."*
+
+The co-pilot will call the simulation engine with adjusted parameters and explain the results — it never makes up numbers.
+
 ## Architecture
 
 ```
