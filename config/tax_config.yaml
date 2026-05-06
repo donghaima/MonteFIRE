@@ -1,0 +1,127 @@
+# tax_config.yaml — all constants driving the simulation engine.
+# Update annually; no Python changes needed when brackets or thresholds shift.
+
+tax_year: 2024
+
+# ── Federal income tax ────────────────────────────────────────────────────────
+federal_income_tax:
+  married_filing_jointly:
+    standard_deduction: 29200
+    brackets:
+      - {rate: 0.10, floor: 0,       ceiling: 23200}
+      - {rate: 0.12, floor: 23200,   ceiling: 94300}
+      - {rate: 0.22, floor: 94300,   ceiling: 201050}
+      - {rate: 0.24, floor: 201050,  ceiling: 383900}
+      - {rate: 0.32, floor: 383900,  ceiling: 487450}
+      - {rate: 0.35, floor: 487450,  ceiling: 731200}
+      - {rate: 0.37, floor: 731200,  ceiling: null}
+  single:
+    standard_deduction: 14600
+    brackets:
+      - {rate: 0.10, floor: 0,       ceiling: 11600}
+      - {rate: 0.12, floor: 11600,   ceiling: 47150}
+      - {rate: 0.22, floor: 47150,   ceiling: 100525}
+      - {rate: 0.24, floor: 100525,  ceiling: 191950}
+      - {rate: 0.32, floor: 191950,  ceiling: 243725}
+      - {rate: 0.35, floor: 243725,  ceiling: 609350}
+      - {rate: 0.37, floor: 609350,  ceiling: null}
+
+# ── Long-term capital gains ───────────────────────────────────────────────────
+# Rates apply to taxable income (ordinary + cap gains) after standard deduction.
+# Gains are stacked on top of ordinary income for bracket placement.
+long_term_capital_gains:
+  married_filing_jointly:
+    - {rate: 0.00, ceiling: 94050}
+    - {rate: 0.15, ceiling: 583750}
+    - {rate: 0.20, ceiling: null}
+  single:
+    - {rate: 0.00, ceiling: 47025}
+    - {rate: 0.15, ceiling: 518900}
+    - {rate: 0.20, ceiling: null}
+
+# ── Early withdrawal ──────────────────────────────────────────────────────────
+penalty_free_age: 59.5
+early_withdrawal_penalty_rate: 0.10
+
+# ── Social Security taxability (IRS provisional income formula) ───────────────
+# Provisional income = non-SS income + 50% of SS benefit
+# Below threshold_50pct: 0% of SS is taxable
+# threshold_50pct to threshold_85pct: up to 50% is taxable
+# Above threshold_85pct: up to 85% is taxable
+social_security_taxation:
+  married_filing_jointly:
+    threshold_50pct: 32000
+    threshold_85pct: 44000
+  single:
+    threshold_50pct: 25000
+    threshold_85pct: 34000
+
+# ── ACA (before Medicare eligibility at 65) ───────────────────────────────────
+aca:
+  eligible_until_age: 65
+  fpl_by_household_size:
+    1: 15060
+    2: 20440
+    3: 25820
+    4: 31200
+  subsidy_cliff_multiple: 4.0      # no subsidy above 400% FPL
+  # Benchmark SLCSP annual premium (per person; varies by age/region — configure per household)
+  unsubsidized_annual_premium_per_person: 12000
+  # Piecewise linear contribution schedule: [fpl_multiple, max_contribution_pct_of_income]
+  # Interpolated linearly between points. Above cliff multiple: no subsidy.
+  contribution_schedule:
+    - [1.00, 0.000]
+    - [1.33, 0.000]
+    - [1.50, 0.020]
+    - [2.00, 0.040]
+    - [2.50, 0.060]
+    - [3.00, 0.080]
+    - [4.00, 0.085]
+
+# ── Medicare (age 65+) ────────────────────────────────────────────────────────
+medicare:
+  eligible_age: 65
+  part_b_monthly_per_person: 174.70
+  part_d_monthly_per_person: 50.00
+  supplement_annual_per_person: 2000.00   # Medigap estimate
+  # IRMAA surcharge thresholds (MFJ 2024); only Part B surcharge modeled here
+  irmaa_thresholds_mfj:
+    - {magi_floor: 206000, surcharge_monthly_per_person: 69.90}
+    - {magi_floor: 258000, surcharge_monthly_per_person: 174.90}
+    - {magi_floor: 322000, surcharge_monthly_per_person: 279.90}
+    - {magi_floor: 386000, surcharge_monthly_per_person: 384.90}
+    - {magi_floor: 750000, surcharge_monthly_per_person: 419.30}
+
+# ── RMD (Required Minimum Distributions) ─────────────────────────────────────
+rmd:
+  start_age: 73
+  # IRS Uniform Lifetime Table (publication 590-B)
+  uniform_lifetime_table:
+    73: 26.5
+    74: 25.5
+    75: 24.6
+    76: 23.7
+    77: 22.9
+    78: 22.0
+    79: 21.1
+    80: 20.2
+    81: 19.4
+    82: 18.5
+    83: 17.7
+    84: 16.8
+    85: 16.0
+    86: 15.2
+    87: 14.4
+    88: 13.7
+    89: 12.9
+    90: 12.2
+    91: 11.5
+    92: 10.8
+    93: 10.1
+    94: 9.5
+    95: 8.9
+    96: 8.4
+    97: 7.8
+    98: 7.3
+    99: 6.8
+    100: 6.4

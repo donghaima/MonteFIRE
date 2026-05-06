@@ -1,0 +1,152 @@
+schema_version: "1.0"
+
+adapters:
+
+  # ── Fidelity Brokerage / 401k ──────────────────────────────────────────────
+  - id: fidelity_brokerage
+    institution: "Fidelity"
+    description: "Fidelity full-view positions CSV (exported from NetBenefits or Brokerage)."
+
+    filename_pattern: "^Portfolio_Positions_.*\\.csv$"
+
+    header_row: 0
+    skip_footer_rows: 4
+
+    column_map:
+      account_name:      "Account Name"
+      account_number:    "Account Number"
+      ticker:            "Symbol"
+      description:       "Description"
+      quantity:          "Quantity"
+      last_price:        "Last Price"
+      current_value:     "Current Value"
+      cost_basis:        "Cost Basis Total"
+      asset_class_raw:   null
+
+    account_defaults:
+      institution: "Fidelity"
+      adapter_id:  "fidelity_brokerage"
+
+    account_type_rules:
+      - match: "(?i)roth\\s+401"
+        account_type: "roth_401k"
+        tax_treatment: "tax_free"
+      - match: "(?i)401"
+        account_type: "401k"
+        tax_treatment: "tax_deferred"
+      - match: "(?i)roth\\s+ira"
+        account_type: "roth_ira"
+        tax_treatment: "tax_free"
+      - match: "(?i)\\bira\\b"
+        account_type: "ira"
+        tax_treatment: "tax_deferred"
+      - match: "(?i)hsa"
+        account_type: "hsa"
+        tax_treatment: "tax_free"
+      - match: ".*"
+        account_type: "brokerage"
+        tax_treatment: "taxable"
+
+    transforms:
+      current_value:
+        strip_chars: "[$,]"
+        cast: "float"
+        null_values: ["--", "N/A", ""]
+      quantity:
+        strip_chars: "[,]"
+        cast: "float"
+        null_values: ["--", ""]
+      last_price:
+        strip_chars: "[$,]"
+        cast: "float"
+        null_values: ["--", ""]
+      cost_basis:
+        strip_chars: "[$,]"
+        cast: "float"
+        null_values: ["--", "N/A", ""]
+
+    ticker_tags:
+      SPAXX:  "cash_equivalent"
+      FDRXX:  "cash_equivalent"
+      FZROX:  "us_equity"
+      FZILX:  "intl_equity"
+      FXNAX:  "us_bond"
+      BTC:    "crypto"
+
+
+  # ── Empower Retirement ────────────────────────────────────────────────────
+  - id: empower_retirement
+    institution: "Empower"
+    description: "Empower retirement account CSV (Holdings export)."
+
+    filename_pattern: "^Empower_Holdings_.*\\.csv$"
+
+    header_row: 2
+    skip_footer_rows: 0
+
+    column_map:
+      account_name:      "Plan Name"
+      account_number:    "Account Number"
+      ticker:            "Ticker"
+      description:       "Investment Name"
+      quantity:          "Shares"
+      last_price:        "Price"
+      current_value:     "Total Value"
+      cost_basis:        null
+      asset_class_raw:   "Asset Class"
+
+    account_defaults:
+      institution: "Empower"
+      adapter_id:  "empower_retirement"
+
+    account_type_rules:
+      - match: "(?i)roth"
+        account_type: "roth_401k"
+        tax_treatment: "tax_free"
+      - match: ".*"
+        account_type: "401k"
+        tax_treatment: "tax_deferred"
+
+    transforms:
+      current_value:
+        strip_chars: "[$,]"
+        cast: "float"
+        null_values: ["--", ""]
+      quantity:
+        strip_chars: "[,]"
+        cast: "float"
+        null_values: ["--", ""]
+      last_price:
+        strip_chars: "[$,]"
+        cast: "float"
+        null_values: ["--", ""]
+
+    asset_class_map:
+      "Domestic Equity":      "us_equity"
+      "International Equity": "intl_equity"
+      "Fixed Income":         "us_bond"
+      "Stable Value":         "cash_equivalent"
+      "Real Estate":          "real_estate"
+      "Company Stock":        "us_equity"
+
+    ticker_tags: {}
+
+
+# ── Shared heuristics (applied when adapter-specific lookup misses) ──────────
+asset_class_heuristics:
+  - pattern: "(?i)(vti|schb|itot|fzrox|sptm)"
+    asset_class: "us_equity"
+  - pattern: "(?i)(vxus|ixus|fzilx|veu)"
+    asset_class: "intl_equity"
+  - pattern: "(?i)(bnd|agg|fxnax|schz)"
+    asset_class: "us_bond"
+  - pattern: "(?i)(bndx|iagg)"
+    asset_class: "intl_bond"
+  - pattern: "(?i)(vnq|schh|xlre)"
+    asset_class: "real_estate"
+  - pattern: "(?i)(spaxx|vmfxx|fdrxx|fdlxx|core|money.?market|stable.?value)"
+    asset_class: "cash_equivalent"
+  - pattern: "(?i)(btc|eth|crypto)"
+    asset_class: "crypto"
+  - pattern: ".*"
+    asset_class: "other"

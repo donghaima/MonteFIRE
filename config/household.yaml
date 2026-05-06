@@ -1,0 +1,23 @@
+# Household configuration — edit once, referenced by the ETL pipeline.
+# account_owner_map ties account numbers (or name substrings) to member IDs.
+
+household_id: "household-001"
+
+members:
+  - id: "member-primary"
+    name: "Primary"
+    birth_date: "1980-01-01"   # YYYY-MM-DD
+    role: "primary"
+
+  - id: "member-spouse"
+    name: "Spouse"
+    birth_date: "1982-06-15"
+    role: "spouse"
+
+# Map account_number substrings (or exact strings) → member id.
+# First match wins. Falls back to "member-primary" if nothing matches.
+account_owner_map:
+  - match: "spouse"
+    owner_id: "member-spouse"
+  - match: ".*"
+    owner_id: "member-primary"
